@@ -21,7 +21,7 @@ WildSense automates this process by combining motion-triggered camera traps, AI-
 
 ## Inspiration
 
-WildSense was inspired by the **SmartWilds dataset**, a multimodal wildlife monitoring project conducted in **Summer 2025 at The Wilds safari park in Ohio**.
+WildSense was inspired by the **SmartWilds dataset** Bharath collected, a multimodal wildlife monitoring project conducted in **Summer 2025 at The Wilds safari park in Ohio**.
 
 [SmartWilds] (https://arxiv.org/pdf/2509.18894)
 
