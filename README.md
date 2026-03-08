@@ -54,7 +54,9 @@ Traditional camera traps capture thousands of images but provide **no automatic 
 
 # Inspiration
 
-WildSense was inspired by the **SmartWilds dataset**, a multimodal wildlife monitoring project conducted in **Summer 2025 at The Wilds safari park in Ohio**.
+WildSense was inspired by the **SmartWilds dataset** Bharath collected, a multimodal wildlife monitoring project conducted in **Summer 2025 at The Wilds safari park in Ohio**.
+
+[SmartWilds](https://arxiv.org/pdf/2509.18894)
 
 SmartWilds collected synchronized:
 
