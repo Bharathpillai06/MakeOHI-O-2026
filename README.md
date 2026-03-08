@@ -3,7 +3,7 @@
 
 **AI-Powered Wildlife Camera Trap System**
 
-PIR Motion Detection • YOLO Animal Detection • BioCLIP Species Identification • GPS Animal Location
+PIR Motion Detection • YOLOv8 Animal Detection • BioCLIP Species Identification • GPS Animal Location Estimation
 
 WildSense is an embedded wildlife monitoring system that automatically detects animals, identifies species, and estimates their GPS location using computer vision and geometric projection. The system transforms traditional camera traps into intelligent ecological sensors capable of generating structured datasets for conservation research.
 
@@ -11,212 +11,459 @@ Developed for **Make I/O 2026**.
 
 ---
 
-## Overview
+## Table of Contents
 
-Traditional trail cameras capture thousands of images but provide **no automatic species identification or location data**, requiring researchers to manually review images.
-
-WildSense automates this process by combining motion-triggered camera traps, AI-based animal detection and classification, and GPS location estimation. The system outputs structured datasets containing **species predictions, confidence scores, and estimated animal coordinates**.
+- [Overview](#overview)
+- [Inspiration](#inspiration)
+- [System Architecture](#system-architecture)
+- [Installation](#installation)
+- [Pipeline Workflow](#pipeline-workflow)
+- [Decision Logic](#decision-logic)
+- [Outputs](#outputs)
+- [CSV Output Schema](#csv-output-schema)
+- [Full Pipeline Example](#full-pipeline-example)
+- [GPS Projection Model](#gps-projection-model)
+- [BioCLIP Species Classification](#bioclip-species-classification)
+- [Serial Communication Protocol](#serial-communication-protocol)
+- [Repository Structure](#repository-structure)
+- [Success Metrics](#success-metrics)
+- [Non-Goals](#non-goals)
+- [Long-Term Vision](#long-term-vision)
 
 ---
 
-## Inspiration
+# Overview
 
-WildSense was inspired by the **SmartWilds dataset** Bharath collected, a multimodal wildlife monitoring project conducted in **Summer 2025 at The Wilds safari park in Ohio**.
+Traditional camera traps capture thousands of images but provide **no automatic species identification or location data**, requiring researchers to manually review images.
 
-[SmartWilds] (https://arxiv.org/pdf/2509.18894)
+**WildSense automates this process** by combining motion-triggered capture, AI-based detection and classification, and GPS location estimation directly at the field device.
+
+### Key Characteristics
+
+- Event-driven (PIR triggered)
+- No continuous inference
+- No required cloud connection
+- Local SD card storage on ESP32-CAM
+- Structured CSV output per scan batch
+- Geometric GPS projection from bounding box geometry
+
+> [!IMPORTANT]
+> All inference runs locally on the Raspberry Pi. No cloud dependency is required.
+
+---
+
+# Inspiration
+
+WildSense was inspired by the **SmartWilds dataset**, a multimodal wildlife monitoring project conducted in **Summer 2025 at The Wilds safari park in Ohio**.
 
 SmartWilds collected synchronized:
 
-- Drone imagery  
-- Camera trap photos and videos  
-- Bioacoustic recordings  
+- Drone imagery
+- Camera trap images and videos
+- Bioacoustic recordings
 
-During this project we observed how much **manual processing researchers must perform to analyze camera trap data**, which motivated the creation of WildSense to automate species identification and spatial analysis.
+During this project we observed how much **manual processing is required to analyze camera trap data**, which motivated the creation of WildSense to automate species identification and spatial analysis.
 
 ---
 
-## System Architecture
+# System Architecture
 
-WildSense uses a **two-device architecture** consisting of a camera node and a processing node.
+## Hardware
+
+- ESP32-CAM module (AI Thinker)
+- PIR motion sensor (GPIO 13)
+- MicroSD card (onboard ESP32-CAM)
+- Raspberry Pi (any model with UART)
+- UART serial connection (115200 baud)
+
+---
+
+## Two-Device Architecture
+
+```
+┌─────────────────────────┐         UART Serial         ┌────────────────────────────┐
+│      ESP32-CAM          │  ──────────────────────────► │      Raspberry Pi          │
+│                         │                              │                            │
+│  • PIR motion trigger   │   IMG:<filename>:<size>\n    │  • Receives images         │
+│  • JPEG capture         │   [raw JPEG bytes]           │  • Batches every 10 hours  │
+│  • MicroSD storage      │   END\n                      │  • Runs YOLOv8 detection   │
+│  • UART transmission    │                              │  • Runs BioCLIP classify   │
+│  • 1-min cooldown       │ ◄──────────────────────────  │  • GPS projection          │
+│  • CLEAR command resp.  │        CLEAR\n               │  • CSV output              │
+└─────────────────────────┘                              └────────────────────────────┘
+```
 
 ### Camera Node (ESP32-CAM)
 
-The camera node captures wildlife images in the field.
+Captures wildlife images in the field.
 
 Features:
-
-- ESP32-CAM module  
-- PIR motion sensor  
-- 1600×1200 JPEG capture  
-- MicroSD storage  
-- 1-minute capture cooldown  
-- UART serial transmission  
-
-Images are transmitted using a custom serial protocol:
-
-```
-IMG → raw image bytes → END
-```
-
-The ESP32 listens for a `CLEAR` command from the processing unit to erase images after they are processed.
-
----
+- ESP32-CAM module (AI Thinker pinout)
+- PIR motion sensor
+- 1600×1200 JPEG capture (UXGA with PSRAM)
+- MicroSD storage via SD_MMC
+- 1-minute capture cooldown
+- UART transmission to Raspberry Pi
 
 ### Processing Node (Raspberry Pi)
 
-The Raspberry Pi receives images and performs the AI processing pipeline.
-
-Responsibilities include:
-
-- Receiving images over UART  
-- Timestamping and storing images  
-- Running computer vision inference  
-- Estimating animal GPS position  
-- Exporting structured detection datasets  
-
-The system runs a threaded pipeline consisting of a **UART image receiver and a scheduled inference scan**.
-
----
-
-## AI Pipeline
-
-WildSense uses a **two-stage computer vision pipeline**.
-
-### Stage 1 — YOLOv8
-
-YOLOv8 detects animals in the image and generates bounding boxes.
-
-- OpenVINO optimized for CPU inference  
-- Image size: 640×640  
-- Confidence threshold: 0.25  
-
-Each detected bounding box is cropped and passed to the classification stage.
-
----
-
-### Stage 2 — BioCLIP
-
-BioCLIP is a biology-focused vision-language model used for species identification.
+Runs AI inference on accumulated images.
 
 Features:
-
-- Tree-of-Life trained model  
-- Custom label list for site-specific species  
-- Direct classification from image crops  
-- Outputs predicted species and confidence score  
-
----
-
-## GPS Estimation
-
-WildSense estimates the **location of the detected animal** using camera geometry.
-
-Steps:
-
-1. Compute focal length from camera field-of-view  
-2. Estimate distance using bounding box height  
-3. Calculate horizontal angle relative to image center  
-4. Combine with camera bearing  
-5. Project the animal's GPS coordinates from the camera location  
-
-Distance estimation formula:
-
-```
-distance = (target_height × focal_length) / bbox_height
-```
+- Receives images over UART serial
+- Accumulates images for 10-hour batch windows
+- YOLOv8 object detection
+- BioCLIP species classification
+- Distance + bearing geometry
+- GPS coordinate projection
+- CSV results output
 
 ---
 
-## Output Dataset
+## Software Stack
 
-Each detection is exported as a row in a CSV dataset.
+- Python 3.9+
+- PyTorch
+- Ultralytics YOLOv8
+- pybioclip (`hf-hub:imageomics/bioclip`)
+- Pillow
+- Arduino / ESP-IDF (ESP32-CAM firmware)
 
-Example fields include:
+---
 
-```
-image
-timestamp_file
-detection_index
-bioclip_label
-bioclip_score
-yolo_conf
-xmin ymin xmax ymax
-distance_m
-angle_deg
-camera_lat camera_lon
-animal_lat animal_lon
-animal_absolute_bearing_deg
+# Installation
+
+```bash
+pip install ultralytics
+pip install pybioclip pillow
+pip install torch torchvision
 ```
 
 ---
 
-## Results
+# Pipeline Workflow
 
-Initial deployment produced:
+## Step 1: Motion Trigger (ESP32-CAM)
 
-- **28,376 detections**
-- **6 camera sites**
-- **11 tracked species**
+When PIR sensor detects motion:
 
-WildSense automatically generated species predictions and estimated GPS coordinates from camera trap imagery.
+1. Check 1-minute cooldown timer
+2. Capture JPEG image
+3. Save to MicroSD card
+4. Transmit image over UART to Raspberry Pi
+5. Return to idle
 
----
-
-## Hardware Requirements
-
-Camera Node:
-
-- ESP32-CAM  
-- PIR motion sensor  
-- MicroSD card  
-- 5V power supply  
-
-Processing Node:
-
-- Raspberry Pi  
-- UART connection  
-- Local storage for image datasets  
-
-Recommended for field deployment:
-
-- 18650 battery pack  
-- MT3608 boost converter  
+> [!TIP]
+> A 1-minute cooldown prevents burst captures from a single animal event.
 
 ---
 
-## Future Work
+## Step 2: Image Accumulation (Raspberry Pi)
 
-Planned improvements include:
+The Raspberry Pi receiver thread continuously listens on `/dev/ttyS0` and:
 
-- Multi-camera monitoring networks  
-- Cross-triangulated animal locations  
-- Long-range wireless image transfer  
-- Solar-powered deployments  
-- Expanded species classification models  
-- Automated wildlife heatmaps  
+- Parses `IMG:<filename>:<size>` headers
+- Reads raw JPEG bytes
+- Validates `END` footer
+- Saves with timestamp prefix to `./received_images/`
 
 ---
 
-## Impact
+## Step 3: Batch Scan (Every 10 Hours)
 
-WildSense transforms passive trail cameras into **intelligent ecological monitoring systems**, enabling faster wildlife analysis for:
+```bash
+python scan.py \
+  --weights yolov8s_openvino_model \
+  --images ./received_images \
+  --csv-out ./results/detections_<timestamp>.csv \
+  --device cpu
+```
 
-- Conservation research  
-- Biodiversity monitoring  
-- Habitat analysis  
-- Environmental education  
+The scanner:
+
+1. Loads all accumulated `.jpg` files
+2. Runs YOLOv8 detection on each image
+3. Crops each detected bounding box
+4. Passes crop to BioCLIP for species classification
+5. Computes distance and bearing from bounding box geometry
+6. Projects GPS coordinates of the animal
+7. Writes results to CSV
 
 ---
 
-## Authors
+## Step 4: Object Detection (YOLOv8)
 
-**Manas Tripathi**  
-**Bharath Pillai**
+For each image:
 
-Make I/O 2026
+- Bounding boxes extracted from YOLO results
+- Confidence score retained
+- Crop region passed to BioCLIP
 
 ---
 
-## License
+## Step 5: Species Classification (BioCLIP)
 
-MIT License
+Each detected crop is classified against a predefined species list:
+
+```python
+SPECIES_LIST = [
+    "Pere David's deer", "Bison", "Giraffe", "Rhinoceros",
+    "Grevy's zebra", "Wild horse", "Sichuan takin", "Onager",
+    "Scimitar-horned oryx", "Ostrich", "Fish",
+]
+```
+
+Top-K predictions are recorded per detection.
+
+---
+
+## Step 6: GPS Projection
+
+Distance and bearing are estimated from bounding box geometry and projected to GPS coordinates using a spherical earth forward projection.
+
+---
+
+# Decision Logic
+
+```
+FOR each image in batch:
+    Run YOLOv8 detection
+    FOR each bounding box:
+        Crop detection region
+        Run BioCLIP classification → top species label + score
+        Estimate distance from bounding box height + HFOV
+        Compute horizontal angle from bounding box center offset
+        Project animal GPS from camera GPS + bearing + distance
+        Append row to CSV output
+
+After scan:
+    Delete local received_images/*.jpg
+    Send CLEAR command to ESP32
+    Wait for CLEARED acknowledgement
+```
+
+---
+
+# Outputs
+
+All outputs are stored locally on the Raspberry Pi SD card.
+
+---
+
+## CSV Detection Log
+
+Saved to:
+
+```
+./results/detections_<YYYYMMDD_HHMMSS>.csv
+```
+
+---
+
+# CSV Output Schema
+
+One row per confirmed detection.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| image | String | Source image filename |
+| image_path | String | Full path to image |
+| timestamp_file | ISO datetime | File modification time |
+| timestamp_from_name | ISO datetime | Parsed from filename if available |
+| detection_index | Int | Detection index within image |
+| bioclip_label | String | Top predicted species |
+| bioclip_score | Float | BioCLIP confidence score |
+| yolo_conf | Float | YOLO detection confidence |
+| xmin / ymin / xmax / ymax | Float | Bounding box coordinates |
+| distance_m | Float | Estimated distance to animal (metres) |
+| angle_deg | Float | Horizontal angle from camera axis |
+| camera_lat | Float | Camera GPS latitude |
+| camera_lon | Float | Camera GPS longitude |
+| camera_bearing_deg | Float | Camera facing direction (degrees from North) |
+| animal_lat | Float | Projected animal latitude |
+| animal_lon | Float | Projected animal longitude |
+| animal_absolute_bearing_deg | Float | Absolute bearing to animal |
+
+---
+
+# Full Pipeline Example
+
+```bash
+# Start receiver + scheduler on Raspberry Pi
+python ESP_Reader.py
+
+# Run scan manually on a directory
+python scan.py \
+  --weights yolov8s_openvino_model \
+  --images ./received_images \
+  --hfov-deg 42.0 \
+  --target-height-m 0.9 \
+  --camera-lat 39.835373 \
+  --camera-lon -81.738422 \
+  --camera-bearing-deg 0 \
+  --csv-out ./results/detections.csv \
+  --top-k 3
+```
+
+---
+
+# GPS Projection Model
+
+Distance estimation uses the **pinhole camera model**:
+
+```
+focal_length = (image_width / 2) / tan(HFOV / 2)
+distance_m   = (real_height_m × focal_length) / bounding_box_height_px
+```
+
+Horizontal angle estimation:
+
+```
+dx        = bbox_center_x − image_center_x
+angle_deg = atan(dx / focal_length)
+```
+
+GPS forward projection uses a **spherical earth model** (Vincenty-style):
+
+```python
+lat2 = asin(sin(lat1) × cos(d/R) + cos(lat1) × sin(d/R) × cos(bearing))
+lon2 = lon1 + atan2(sin(bearing) × sin(d/R) × cos(lat1),
+                    cos(d/R) − sin(lat1) × sin(lat2))
+```
+
+### Projection Parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `--hfov-deg` | 42.0° | Trail Camera G600 horizontal FOV |
+| `--target-height-m` | 0.9 m | Approximate shoulder height of target species |
+| `--camera-bearing-deg` | 0.0 | Camera facing direction (clockwise from North) |
+
+> [!NOTE]
+> GPS accuracy depends on HFOV calibration and assumed target height. Adjust `--target-height-m` per target species for best results.
+
+---
+
+# BioCLIP Species Classification
+
+WildSense uses **BioCLIP 1** (`hf-hub:imageomics/bioclip`) via `pybioclip`'s `CustomLabelsClassifier`.
+
+Each YOLO-detected crop is classified directly from a PIL Image — no temp file required:
+
+```python
+classifier = CustomLabelsClassifier(
+    cls_ary=SPECIES_LIST,
+    device="cpu",
+    model_str="hf-hub:imageomics/bioclip",
+)
+predictions = classifier.predict(crop)   # PIL Image passed directly
+top_label   = predictions[0]["classification"]
+top_score   = predictions[0]["score"]
+```
+
+Multiple runner-up predictions are optionally recorded as additional CSV columns (`bioclip_label_2`, `bioclip_score_2`, etc.) when `--top-k` > 1.
+
+---
+
+# Serial Communication Protocol
+
+The ESP32-CAM and Raspberry Pi communicate over UART at **115200 baud**.
+
+### ESP32 → Raspberry Pi
+
+| Message | Direction | Description |
+|---------|-----------|-------------|
+| `READY\n` | ESP32 → Pi | Boot complete |
+| `CAPTURING\n` | ESP32 → Pi | Photo triggered |
+| `IMG:<path>:<size>\n` | ESP32 → Pi | Image header |
+| `[raw JPEG bytes]` | ESP32 → Pi | Image data |
+| `END\n` | ESP32 → Pi | Image footer |
+| `SD_SAVED:<path>\n` | ESP32 → Pi | Confirm SD write |
+| `COOLDOWN:<s>s\n` | ESP32 → Pi | Within cooldown window |
+| `CAM_FAIL\n` | ESP32 → Pi | Camera init error |
+| `SD_FAIL\n` | ESP32 → Pi | SD card error |
+| `CLEARED\n` | ESP32 → Pi | SD wipe complete |
+
+### Raspberry Pi → ESP32
+
+| Message | Direction | Description |
+|---------|-----------|-------------|
+| `CLEAR\n` | Pi → ESP32 | Delete all JPGs from SD |
+
+---
+
+# Repository Structure
+
+```
+MakeOHI-O-2026/
+│
+├── src/
+│   ├── esp32_sensing.ino          # ESP32-CAM firmware (Arduino)
+│   ├── ESP_Reader.py              # Raspberry Pi receiver + scheduler
+│   └── depth_estimate.py         # YOLO + BioCLIP + GPS scan pipeline
+│
+├── received_images/               # Incoming images from ESP32 (auto-created)
+│
+├── results/                       # CSV detection outputs (auto-created)
+│   └── detections_<timestamp>.csv
+│
+└── README.md
+```
+
+---
+
+# Success Metrics
+
+## Detection
+
+- Confirmed animal present in YOLO bounding box
+- BioCLIP species confidence score recorded per detection
+
+## GPS Projection
+
+- Animal latitude/longitude estimated per detection
+- Absolute bearing computed from camera orientation + horizontal offset
+
+## Pipeline Reliability
+
+- Handles serial transmission errors gracefully
+- 10-hour batch cycle with automatic SD cleanup
+- Cooldown prevents redundant captures per event
+
+---
+
+# Non-Goals
+
+- No cloud infrastructure
+- No real-time streaming
+- No audio classification
+- No multi-camera synchronization
+- No ecological forecasting
+- No medical or behavioral diagnosis
+
+---
+
+# Long-Term Vision
+
+Future expansions may include:
+
+- Remote cloud upload via cellular module
+- Multi-species BioCLIP expansion (full Tree-of-Life)
+- Nighttime infrared capture support
+- Audio bioacoustic event detection
+- Federated edge learning across multiple nodes
+- Integration with SmartWilds dataset pipelines
+
+---
+
+# Why WildSense Matters
+
+WildSense demonstrates:
+
+- Deployable edge AI in remote field environments
+- Low-cost conservation monitoring with commodity hardware
+- Automated species identification without cloud dependency
+- Structured, research-ready GPS-tagged datasets from raw camera trap images
+
+The innovation is not just detection —  
+it is **automated, deployable, location-aware AI for ecological impact**.
