@@ -25,7 +25,6 @@ import math
 import argparse
 import csv
 import datetime
-import tempfile
 
 # ---------------------------------------------------------------------------
 # Site TW06 — Zebra Shelter, facing North
@@ -232,7 +231,7 @@ def main():
     # ── Load BioCLIP 1 via pybioclip ───────────────────────────────────────
     print(f"Loading BioCLIP 1 CustomLabelsClassifier ({len(SPECIES_LIST)} species, top-k={args.top_k})...")
     classifier = CustomLabelsClassifier(
-        SPECIES_LIST,
+        cls_ary=SPECIES_LIST,
         device=args.device,
         model_str="hf-hub:imageomics/bioclip",
     )
@@ -292,14 +291,13 @@ def main():
             crop = img.crop((x0, y0, x1, y1))
 
             # ── BioCLIP 1 classification ───────────────────────────────────
-            # pybioclip needs a file path, so save the crop to a temp file.
-            with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tf:
-                tmp_path = tf.name
-            try:
-                crop.save(tmp_path, format="JPEG")
-                predictions = classifier.predict(tmp_path, k=args.top_k)
-            finally:
-                os.unlink(tmp_path)
+            # Pass the PIL Image 'crop' directly! No temp file needed.
+            predictions = classifier.predict(crop)
+            
+            # The predict method returns a list of all classes. 
+            # We manually slice the list to keep only the top-K predictions.
+            if isinstance(predictions, list):
+                predictions = predictions[:args.top_k]
 
             # predictions is a list of dicts, best first
             top_pred  = predictions[0] if predictions else {}
