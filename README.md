@@ -7,7 +7,7 @@ PIR Motion Detection • YOLOv8 Animal Detection • BioCLIP Species Identificat
 
 WildSense is an embedded wildlife monitoring system that automatically detects animals, identifies species, and estimates their GPS location using computer vision and geometric projection. The system transforms traditional camera traps into intelligent ecological sensors capable of generating structured datasets for conservation research.
 
-Developed for **Make I/O 2026**.
+Placing 3rd at **Make I/O 2026**.
 
 ---
 
